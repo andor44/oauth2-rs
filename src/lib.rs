@@ -104,6 +104,7 @@ use std::fmt::Error as FormatterError;
 use std::error::Error;
 use url::Url;
 use curl::easy::Easy;
+use std::collections::HashMap;
 
 ///
 /// Stores the configuration for an OAuth2 client.
@@ -400,7 +401,7 @@ impl Display for ResponseType {
 /// See https://tools.ietf.org/html/rfc6749#section-5.1
 ///
 #[allow(missing_docs)]
-#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Token {
     pub token_type: String,
     pub access_token: String,
@@ -410,6 +411,8 @@ pub struct Token {
     pub expires_in: Option<u32>,
     #[serde(default)]
     pub refresh_token: Option<String>,
+    #[serde(skip)]
+    extra_fields: HashMap<String, String>,
 }
 
 impl Token {
@@ -424,6 +427,7 @@ impl Token {
             token_type: String::new(),
             expires_in: None,
             refresh_token: None,
+            extra_fields: HashMap::new(),
         };
 
         let mut error: Option<ErrorType> = None;
@@ -440,7 +444,7 @@ impl Token {
                 "error_description" => error_description = Some(v.into_owned()),
                 "error_uri" => error_uri = Some(v.into_owned()),
                 "state" => state = Some(v.into_owned()),
-                _ => {}
+                k => { token.extra_fields.insert(k.to_string(), v.into_owned().into()); },
             }
         }
 
@@ -459,12 +463,45 @@ impl Token {
 
         debug!("response: {}", data);
 
-        serde_json::from_str(&data).map_err(|parse_error| {
+        let mut extras = HashMap::new();
+
+        let object: serde_json::Value = match serde_json::from_str(&data) {
+            Ok(serde_json::Value::Object(map)) => {
+                for (k, v) in map.iter() {
+                    match &k[..] {
+                        "access_token" | "token_type" | "scope" | "error" |
+                        "error_description" | "error_uri" | "state" => (),
+                        key => {
+                            if let &serde_json::Value::String(ref string) = v {
+                                extras.insert(key.to_string(), string.clone());
+                            }
+                        }
+                    }
+                }
+                serde_json::Value::Object(map)
+            },
+            Ok(json) => return Err(TokenError::other(format!("unknown json received: {}", json))),
+            Err(error) => {
+                return Err(TokenError::other(format!("couldn't parse json response: {}", error)))
+            }
+        };
+
+        serde_json::from_value(object).map_err(|parse_error| {
             match serde_json::from_str::<TokenError>(&data) {
                 Ok(token_error) => token_error,
-                Err(_) => TokenError::other(format!("couldn't parse json response: {}", parse_error)),
+                Err(_) => {
+                    TokenError::other(format!("couldn't parse json response: {}", parse_error))
+                }
             }
+        }).map(|mut token: Self| {
+            token.extra_fields = extras;
+            token
         })
+    }
+
+    /// Try to retrieve a potential extra, non-standard parameter returned by the provider
+    pub fn extra(&self, key: &str) -> Option<&str> {
+        self.extra_fields.get(key).map(String::as_str)
     }
 }
 

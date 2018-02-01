@@ -471,3 +471,56 @@ fn test_exchange_code_fails_gracefully_on_transport_error() {
         _ => assert!(false),
     }
 }
+
+#[test]
+fn test_exchange_code_with_extra_fields_form_response() {
+    let mock = mock("POST", "/token")
+        .match_body("grant_type=authorization_code&code=ccc&client_id=aaa&client_secret=bbb")
+        .with_body("access_token=12%2F34&token_type=bearer&scope=read,write&id_token=foo")
+        .create();
+
+    let config = Config::new("aaa", "bbb", "http://example.com/auth", &(SERVER_URL.to_string() + "/token"));
+    let token = config.exchange_code("ccc");
+
+    mock.assert();
+
+    assert!(token.is_ok());
+
+    let token = token.unwrap();
+    assert_eq!("12/34", token.access_token);
+    assert_eq!("bearer", token.token_type);
+    assert_eq!(vec!["read".to_string(), "write".to_string()], token.scopes);
+    assert_eq!(Some("foo"), token.extra("id_token"));
+    assert_eq!(None, token.expires_in);
+    assert_eq!(None, token.refresh_token);
+}
+
+#[test]
+fn test_exchange_code_with_extra_fields_json_response() {
+    let body = r#"{
+    "access_token": "12/34",
+    "token_type": "bearer",
+    "scopes": ["read", "write"],
+    "id_token": "foo"
+}"#;
+    let mock = mock("POST", "/token")
+        .match_body("grant_type=authorization_code&code=ccc&client_id=aaa&client_secret=bbb")
+        .with_header("content-type", "application/json")
+        .with_body(body)
+        .create();
+
+    let config = Config::new("aaa", "bbb", "http://example.com/auth", &(SERVER_URL.to_string() + "/token"));
+    let token = config.exchange_code("ccc");
+
+    mock.assert();
+
+    assert!(token.is_ok());
+
+    let token = token.unwrap();
+    assert_eq!("12/34", token.access_token);
+    assert_eq!("bearer", token.token_type);
+    assert_eq!(vec!["read".to_string(), "write".to_string()], token.scopes);
+    assert_eq!(Some("foo"), token.extra("id_token"));
+    assert_eq!(None, token.expires_in);
+    assert_eq!(None, token.refresh_token);
+}
